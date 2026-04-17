@@ -4,6 +4,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
+use chrono::{DateTime, Utc};
 
 use crate::types::{AccountsStore, AuthData, StoredAccount};
 
@@ -197,6 +198,7 @@ pub fn update_account_chatgpt_tokens(
     chatgpt_account_id: Option<String>,
     email: Option<String>,
     plan_type: Option<String>,
+    subscription_expires_at: Option<DateTime<Utc>>,
 ) -> Result<StoredAccount> {
     let mut store = load_accounts()?;
 
@@ -231,6 +233,10 @@ pub fn update_account_chatgpt_tokens(
 
     if let Some(new_plan_type) = plan_type {
         account.plan_type = Some(new_plan_type);
+    }
+
+    if let Some(subscription_expires_at) = subscription_expires_at {
+        account.subscription_expires_at = Some(subscription_expires_at);
     }
 
     let updated = account.clone();

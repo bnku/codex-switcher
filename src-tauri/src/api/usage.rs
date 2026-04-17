@@ -126,8 +126,7 @@ async fn warmup_with_chatgpt_auth(account: &StoredAccount) -> Result<()> {
     let fresh_account = ensure_chatgpt_tokens_fresh(account).await?;
     let (access_token, chatgpt_account_id) = extract_chatgpt_auth(&fresh_account)?;
 
-    let mut response =
-        send_chatgpt_warmup_request(access_token, chatgpt_account_id, true).await?;
+    let mut response = send_chatgpt_warmup_request(access_token, chatgpt_account_id, true).await?;
     if response.status() == StatusCode::UNAUTHORIZED {
         println!(
             "[Warmup] Unauthorized for account {}, refreshing token and retrying once",
