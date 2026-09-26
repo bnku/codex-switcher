@@ -125,7 +125,7 @@ fn macos_resume_command(
     cwd: &Path,
     session_id: &str,
     phrase: &str,
-    restart_file: &Path,
+    model: Option<&str>,
 ) -> String {
     let cwd = escape_shell_arg(&cwd.to_string_lossy());
     let binary = escape_shell_arg(&codex_bin.to_string_lossy());
@@ -135,9 +135,9 @@ fn macos_resume_command(
     } else {
         format!(" {}", escape_shell_arg(phrase))
     };
-    let restart = escape_shell_arg(&restart_file.to_string_lossy());
+    let model_arg = model.map(|model| format!(" --model {}", escape_shell_arg(model))).unwrap_or_default();
     format!(
-        "cd {cwd} && while true; do {binary} resume {session}{phrase_arg}; if [ -f {restart} ]; then rm -f {restart}; sleep 1; continue; fi; break; done; exit"
+        "cd {cwd} && {binary} resume{model_arg} {session}{phrase_arg}; exit"
     )
 }
 
@@ -600,6 +600,39 @@ async fn app_server_request(
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
+fn select_recovery_model(catalog: &serde_json::Value, preferred: Option<&str>) -> Result<String> {
+    let models = catalog.get("data").and_then(|value| value.as_array())
+        .context("Codex returned no available models")?;
+    let selected = preferred
+        .and_then(|name| models.iter().find(|model| model.get("model").and_then(|v| v.as_str()) == Some(name)))
+        .or_else(|| models.iter().find(|model| model.get("isDefault").and_then(|v| v.as_bool()) == Some(true)))
+        .or_else(|| models.first())
+        .and_then(|model| model.get("model").and_then(|v| v.as_str()))
+        .context("No supported Codex model is available for this account")?;
+    Ok(selected.to_string())
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+async fn default_recovery_model() -> Result<String> {
+    let mut command = tokio::process::Command::new(find_codex_binary());
+    command.env_remove("LD_LIBRARY_PATH");
+    let mut child = command.arg("app-server").stdin(Stdio::piped()).stdout(Stdio::piped())
+        .stderr(Stdio::null()).spawn().context("Could not query Codex models")?;
+    let mut stdin = child.stdin.take().context("Codex app-server has no stdin")?;
+    let mut lines = BufReader::new(child.stdout.take().context("Codex app-server has no stdout")?).lines();
+    let result = async {
+        app_server_request(&mut stdin, &mut lines, 1, "initialize",
+            serde_json::json!({"clientInfo":{"name":"codex-switcher","version":env!("CARGO_PKG_VERSION")}})).await?;
+        stdin.write_all(b"{\"method\":\"initialized\",\"params\":{}}\n").await?;
+        let catalog = app_server_request(&mut stdin, &mut lines, 2, "model/list",
+            serde_json::json!({"limit":100,"includeHidden":false})).await?;
+        select_recovery_model(&catalog, None)
+    }.await;
+    let _ = child.kill().await;
+    result
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 async fn resume_desktop_after_handoff(
     token: String,
     sessions: &[ActiveCodexSession],
@@ -630,11 +663,13 @@ async fn resume_desktop_after_handoff(
         .await?;
         stdin.write_all(b"{\"method\":\"initialized\",\"params\":{}}\n").await?;
         stdin.flush().await?;
+        let catalog = app_server_request(&mut stdin, &mut lines, 2, "model/list",
+            serde_json::json!({"limit":100,"includeHidden":false})).await?;
 
         let mut started = Vec::new();
         for (index, session) in sessions.iter().enumerate() {
-            let id = 2 + index as u64 * 2;
-            if let Err(error) = app_server_request(
+            let id = 3 + index as u64 * 2;
+            let resumed = match app_server_request(
                 &mut stdin,
                 &mut lines,
                 id,
@@ -642,9 +677,13 @@ async fn resume_desktop_after_handoff(
                 serde_json::json!({"threadId": session.session_id}),
             )
             .await {
-                eprintln!("[AutoRecovery] Could not resume desktop thread {}: {error}", session.session_id);
-                continue;
-            }
+                Ok(resumed) => resumed,
+                Err(error) => {
+                    eprintln!("[AutoRecovery] Could not resume desktop thread {}: {error}", session.session_id);
+                    continue;
+                }
+            };
+            let model = select_recovery_model(&catalog, resumed.get("model").and_then(|v| v.as_str()))?;
             let phrase = resolve_session_resume_phrase(&session.session_id, &settings.continue_phrase);
             if let Err(error) = app_server_request(
                 &mut stdin,
@@ -654,6 +693,7 @@ async fn resume_desktop_after_handoff(
                 serde_json::json!({
                     "threadId": session.session_id,
                     "input": [{"type": "text", "text": phrase}],
+                    "model": model,
                 }),
             )
             .await {
@@ -1398,12 +1438,9 @@ pub fn launch_session_in_terminal(
     cwd: Option<&str>,
     phrase: &str,
     preferred_terminal: Option<&str>,
+    model: Option<&str>,
 ) -> Result<u32> {
     let codex_bin = find_codex_binary();
-    let restart_file = std::env::temp_dir()
-        .join(format!("codex-switcher-restart-{}", session_id));
-    #[cfg(target_os = "linux")]
-    let restart_file_str = restart_file.to_string_lossy().to_string();
 
     let default_cwd = cwd
         .map(PathBuf::from)
@@ -1422,38 +1459,19 @@ unset WEBKIT_DISABLE_DMABUF_RENDERER
 CODEX_BIN="$1"
 SESSION_ID="$2"
 CURRENT_PHRASE="$3"
-RESTART_FILE="$4"
-SESSION_CWD="$5"
+SESSION_CWD="$4"
+MODEL="$5"
 
-while true; do
-    if [ -n "$SESSION_CWD" ] && [ -d "$SESSION_CWD" ]; then
-        if [ "$CURRENT_PHRASE" = "/goal resume" ] || [ -z "$CURRENT_PHRASE" ]; then
-            "$CODEX_BIN" resume -C "$SESSION_CWD" "$SESSION_ID"
-        else
-            "$CODEX_BIN" resume -C "$SESSION_CWD" "$SESSION_ID" "$CURRENT_PHRASE"
-        fi
-    else
-        if [ "$CURRENT_PHRASE" = "/goal resume" ] || [ -z "$CURRENT_PHRASE" ]; then
-            "$CODEX_BIN" resume "$SESSION_ID"
-        else
-            "$CODEX_BIN" resume "$SESSION_ID" "$CURRENT_PHRASE"
-        fi
-    fi
-    if [ -f "$RESTART_FILE" ]; then
-        if [ -s "$RESTART_FILE" ]; then
-            CURRENT_PHRASE=$(cat "$RESTART_FILE" 2>/dev/null)
-        else
-            CURRENT_PHRASE="continue"
-        fi
-        rm -f "$RESTART_FILE"
-        printf "\n\033[1;36m========================================================\033[0m\n"
-        printf "\033[1;32m [Codex Switcher] Account switched. Resuming in-place...\033[0m\n"
-        printf "\033[1;36m========================================================\033[0m\n\n"
-        sleep 1
-        continue
-    fi
-    break
-done
+set -- "$CODEX_BIN" resume
+if [ -n "$MODEL" ]; then set -- "$@" --model "$MODEL"; fi
+if [ -n "$SESSION_CWD" ] && [ -d "$SESSION_CWD" ]; then
+    set -- "$@" -C "$SESSION_CWD"
+fi
+set -- "$@" "$SESSION_ID"
+if [ "$CURRENT_PHRASE" != "/goal resume" ] && [ -n "$CURRENT_PHRASE" ]; then
+    set -- "$@" "$CURRENT_PHRASE"
+fi
+"$@"
 exec $SHELL
 "#;
 
@@ -1478,8 +1496,8 @@ exec $SHELL
             &codex_bin.to_string_lossy(),
             session_id,
             phrase,
-            &restart_file_str,
             cwd_arg,
+            model.unwrap_or(""),
         ];
 
         for term_path in candidates {
@@ -1550,7 +1568,7 @@ exec $SHELL
             &default_cwd,
             session_id,
             phrase,
-            &restart_file,
+            model,
         );
         let mut cmd = Command::new("osascript");
         cmd.arg("-e").arg(script).arg("--").arg(command);
@@ -1565,9 +1583,11 @@ exec $SHELL
         } else {
             format!(" {}", escape_shell_arg(phrase))
         };
+        let model_arg = model.map(|model| format!(" --model {}", escape_shell_arg(model))).unwrap_or_default();
         let codex_cmd = format!(
-            "{} resume {}{}",
+            "{} resume{} {}{}",
             escape_shell_arg(&codex_bin.to_string_lossy()),
+            model_arg,
             escape_shell_arg(session_id),
             phrase_arg
         );
@@ -1779,9 +1799,10 @@ async fn handle_account_switch_for_session(
                 return Ok(Some(notification));
             }
 
-            let restart_file = std::env::temp_dir()
-                .join(format!("codex-switcher-restart-{}", session.session_id));
-            let _ = fs::write(&restart_file, &phrase);
+            #[cfg(any(target_os = "macos", target_os = "linux"))]
+            let recovery_model = Some(default_recovery_model().await?);
+            #[cfg(windows)]
+            let recovery_model: Option<String> = None;
 
             // Terminate stale process that still holds old credentials in memory
             if session.pid > 0 {
@@ -1792,25 +1813,13 @@ async fn handle_account_switch_for_session(
                 activate_session_goal(&session.session_id);
             }
 
-            // Wait briefly to see if an existing terminal runner consumed the restart file
-            let mut consumed = false;
-            for _ in 0..12 {
-                tokio::time::sleep(Duration::from_millis(100)).await;
-                if !restart_file.exists() {
-                    consumed = true;
-                    break;
-                }
-            }
-
-            if !consumed {
-                let _ = fs::remove_file(&restart_file);
-                let _ = launch_session_in_terminal(
-                    &session.session_id,
-                    session.cwd.as_deref(),
-                    &phrase,
-                    settings.preferred_terminal.as_deref(),
-                );
-            }
+            launch_session_in_terminal(
+                &session.session_id,
+                session.cwd.as_deref(),
+                &phrase,
+                settings.preferred_terminal.as_deref(),
+                recovery_model.as_deref(),
+            )?;
 
             if !is_goal {
                 let session_id_clone = session.session_id.clone();
@@ -1845,17 +1854,10 @@ async fn handle_account_switch_for_session(
             let notification = RecoveryEventNotification {
                 event_type: "account_switched".to_string(),
                 session_id: session.session_id.clone(),
-                message: if consumed {
-                    format!(
-                        "Resumed session in-place with '{phrase}' on newly active account (switched {}s ago)",
-                        switch_time.elapsed().as_secs()
-                    )
-                } else {
-                    format!(
-                        "Relaunched session with '{phrase}' on newly active account (switched {}s ago)",
-                        switch_time.elapsed().as_secs()
-                    )
-                },
+                message: format!(
+                    "Relaunched session with '{phrase}' on newly active account (switched {}s ago)",
+                    switch_time.elapsed().as_secs()
+                ),
                 timestamp: Utc::now(),
             };
 
@@ -2114,10 +2116,10 @@ async fn handle_account_switch_for_session(
     }
 
     let is_goal = is_session_goal_active(&session.session_id);
-
-    let restart_file = std::env::temp_dir()
-        .join(format!("codex-switcher-restart-{}", session.session_id));
-    let _ = fs::write(&restart_file, &phrase);
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    let recovery_model = Some(default_recovery_model().await?);
+    #[cfg(windows)]
+    let recovery_model: Option<String> = None;
 
     // Codex CLI caches JWT tokens in process memory (CachedAuth) for the entire lifetime
     // of the process. In-place queue messages on an existing process will reuse the stale token
@@ -2131,25 +2133,13 @@ async fn handle_account_switch_for_session(
         activate_session_goal(&session.session_id);
     }
 
-    // Check if an existing terminal runner consumed the restart file
-    let mut consumed = false;
-    for _ in 0..12 {
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        if !restart_file.exists() {
-            consumed = true;
-            break;
-        }
-    }
-
-    if !consumed {
-        let _ = fs::remove_file(&restart_file);
-        let _ = launch_session_in_terminal(
-            &session.session_id,
-            session.cwd.as_deref(),
-            &phrase,
-            settings.preferred_terminal.as_deref(),
-        );
-    }
+    launch_session_in_terminal(
+        &session.session_id,
+        session.cwd.as_deref(),
+        &phrase,
+        settings.preferred_terminal.as_deref(),
+        recovery_model.as_deref(),
+    )?;
 
     if !is_goal {
         let session_id_clone = session.session_id.clone();
@@ -2186,17 +2176,10 @@ async fn handle_account_switch_for_session(
     let notification = RecoveryEventNotification {
         event_type: "account_switched".to_string(),
         session_id: session.session_id.clone(),
-        message: if consumed {
-            format!(
-                "Switched to account '{}' and resumed session in-place with '{}'",
-                target.name, phrase
-            )
-        } else {
-            format!(
-                "Switched to account '{}' and relaunched session with '{}'",
-                target.name, phrase
-            )
-        },
+        message: format!(
+            "Switched to account '{}' and relaunched session with '{}'",
+            target.name, phrase
+        ),
         timestamp: Utc::now(),
     };
 
@@ -2260,6 +2243,7 @@ pub async fn launch_codex_session(
         cwd.as_deref(),
         &phrase,
         settings.preferred_terminal.as_deref(),
+        None,
     )
     .map_err(|e| e.to_string())
 }
@@ -2380,12 +2364,22 @@ mod tests {
             Path::new("/tmp/my work; touch /tmp/injected"),
             "thread' id",
             "continue $(touch /tmp/injected) 'now'",
-            Path::new("/tmp/restart file"),
+            Some("gpt-6-astra; touch /tmp/injected"),
         );
         assert!(command.contains("cd '/tmp/my work; touch /tmp/injected'"));
-        assert!(command.contains("'/tmp/Codex Bin/codex' resume 'thread'\\'' id'"));
+        assert!(command.contains("'/tmp/Codex Bin/codex' resume --model 'gpt-6-astra; touch /tmp/injected' 'thread'\\'' id'"));
         assert!(command.contains("'continue $(touch /tmp/injected) '\\''now'\\'''"));
-        assert!(command.contains("[ -f '/tmp/restart file' ]"));
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn recovery_model_preserves_supported_choice_and_falls_back_to_account_default() {
+        let catalog = serde_json::json!({"data": [
+            {"model": "gpt-6-astra", "isDefault": true},
+            {"model": "gpt-5.6-sol", "isDefault": false}
+        ]});
+        assert_eq!(select_recovery_model(&catalog, Some("gpt-5.6-sol")).unwrap(), "gpt-5.6-sol");
+        assert_eq!(select_recovery_model(&catalog, Some("gpt-6-sol")).unwrap(), "gpt-6-astra");
     }
 
     fn make_test_account(id: &str, name: &str, expires_at: Option<DateTime<Utc>>) -> StoredAccount {
