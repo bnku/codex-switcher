@@ -640,7 +640,13 @@ async fn resume_desktop_after_handoff(
 ) -> Result<Vec<String>> {
     // The desktop app owns the writer locks while open. Start real turns on a
     // temporary app-server after closing it, then reopen the desktop UI.
-    let mut app_server_cmd = tokio::process::Command::new(find_codex_binary());
+    #[cfg(target_os = "macos")]
+    let desktop_binary = PathBuf::from("/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex");
+    #[cfg(target_os = "macos")]
+    let binary = if desktop_binary.is_file() { desktop_binary } else { find_codex_binary() };
+    #[cfg(not(target_os = "macos"))]
+    let binary = find_codex_binary();
+    let mut app_server_cmd = tokio::process::Command::new(binary);
     app_server_cmd.env_remove("LD_LIBRARY_PATH");
     let mut child = app_server_cmd
         .arg("app-server")
