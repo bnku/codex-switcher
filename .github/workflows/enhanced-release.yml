@@ -1,0 +1,71 @@
+name: Enhanced Release (Fork)
+
+on:
+  push:
+    branches:
+      - enhanced
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release-linux:
+    if: github.repository == 'bnku/codex-switcher'
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install dependencies (Ubuntu)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf jq
+
+      - name: Install frontend dependencies
+        run: pnpm install
+
+      - name: Build frontend
+        run: pnpm build
+
+      - name: Build release binary
+        run: |
+          cargo build --release --manifest-path src-tauri/Cargo.toml
+          mkdir -p dist-release
+          cp src-tauri/target/release/codex-switcher dist-release/codex-switcher-linux-x64
+          chmod +x dist-release/codex-switcher-linux-x64
+          tar -czf dist-release/codex-switcher-linux-x64.tar.gz -C dist-release codex-switcher-linux-x64
+
+      - name: Publish or Update GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: enhanced-latest
+          name: "Codex Switcher Enhanced (Latest)"
+          draft: false
+          prerelease: true
+          make_latest: true
+          body: |
+            Automated build from branch `enhanced` (`${{ github.sha }}`).
+
+            **Included features & upstream PRs:**
+            - **PR #192** ([Lampese/codex-switcher#192](https://github.com/Lampese/codex-switcher/pull/192)): Auto-session recovery, smart quota prioritization, account auto-switch toggles.
+            - **PR #198** ([Lampese/codex-switcher#198](https://github.com/Lampese/codex-switcher/pull/198)): Linux GTK window menu removal and frameless window resize borders.
+          files: |
+            dist-release/codex-switcher-linux-x64
+            dist-release/codex-switcher-linux-x64.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
