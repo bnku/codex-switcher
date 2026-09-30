@@ -1,8 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+# Self-copy to /tmp and re-exec to ensure script survives git branch switching
+if [ "${REBUILD_ENHANCED_STAGE:-0}" != "1" ]; then
+    TMP_SCRIPT="$(mktemp /tmp/rebuild-enhanced.XXXXXX.sh)"
+    cp "${BASH_SOURCE[0]}" "$TMP_SCRIPT"
+    chmod +x "$TMP_SCRIPT"
+    trap 'rm -f "$TMP_SCRIPT"' EXIT
+    export REBUILD_ENHANCED_STAGE=1
+    exec "$TMP_SCRIPT" "$@"
+fi
+
+ROOT_DIR="$(git rev-parse --show-toplevel)"
 cd "$ROOT_DIR"
 
 echo "=================================================="
@@ -32,6 +41,7 @@ git checkout -B enhanced upstream/main
 FEATURE_BRANCHES=(
     "feature/auto-session-recovery"
     "fix/linux-gtk-menu-resize"
+    "fork/enhanced-infra"
 )
 
 for branch in "${FEATURE_BRANCHES[@]}"; do
@@ -74,7 +84,7 @@ pnpm build
 echo "--> Running Rust test suite..."
 cargo test --manifest-path src-tauri/Cargo.toml
 
-# 6. Push updated enhanced branch to fork
+# 6. Push updated enhanced branch to origin
 echo "--> Pushing updated 'enhanced' to origin..."
 git push origin enhanced --force-with-lease
 
