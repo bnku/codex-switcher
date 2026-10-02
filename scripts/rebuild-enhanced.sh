@@ -93,6 +93,9 @@ pnpm tauri build --no-bundle
 
 RELEASE_BIN="$ROOT_DIR/src-tauri/target/release/codex-switcher"
 if [ -f "$RELEASE_BIN" ]; then
+    echo "--> Terminating any running instances of codex-switcher..."
+    killall codex-switcher 2>/dev/null || true
+
     echo "--> Installing binary to ~/.local/bin/codex-switcher..."
     mkdir -p "$HOME/.local/bin"
     cp "$RELEASE_BIN" "$HOME/.local/bin/codex-switcher"
