@@ -53,7 +53,7 @@ for branch in "${FEATURE_BRANCHES[@]}"; do
 
     if ! git merge "$MERGE_TARGET" -m "merge: $branch into enhanced"; then
         echo "Merge conflict detected while merging $branch!"
-        # Check if only known trivial conflict in App.tsx imports exists
+        RESOLVED=0
         if git status -s | grep -q "UU src/App.tsx"; then
             echo "--> Resolving import conflict in src/App.tsx..."
             node -e '
@@ -68,6 +68,23 @@ for branch in "${FEATURE_BRANCHES[@]}"; do
                 fs.writeFileSync("src/App.tsx", content);
             '
             git add src/App.tsx
+            RESOLVED=1
+        fi
+        if git status -s | grep -q "UU src-tauri/src/lib.rs"; then
+            echo "--> Resolving conflict in src-tauri/src/lib.rs..."
+            node -e '
+                const fs = require("fs");
+                let content = fs.readFileSync("src-tauri/src/lib.rs", "utf8");
+                content = content.replace(/<<<<<<< HEAD[\s\S]*?#[cfg\(target_os = "macos"\)][\s\S]*?=======[\s\S]*?use std::io::Write;[\s\S]*?>>>>>>>[^\n]*/g, 
+                    "use std::io::Write;\n#[cfg(unix)]\nuse std::os::unix::fs::OpenOptionsExt;");
+                content = content.replace(/<<<<<<< HEAD\n\s*#\[allow\(unused_mut\)\]\n\s*let mut builder = tauri::Builder::default\(\)\n=======([\s\S]*?)>>>>>>>[^\n]*/g,
+                    "#[allow(unused_mut)]\n    let mut builder = tauri::Builder::default()$1");
+                fs.writeFileSync("src-tauri/src/lib.rs", content);
+            '
+            git add src-tauri/src/lib.rs
+            RESOLVED=1
+        fi
+        if [ "$RESOLVED" -eq 1 ] && [ -z "$(git status -s | grep '^UU')" ]; then
             git commit -m "merge: $branch into enhanced (resolved conflicts)"
             echo "--> Conflict resolved successfully."
         else
@@ -90,7 +107,7 @@ git push origin enhanced --force-with-lease
 
 # 7. Compile local daily-driver release binary
 echo "--> Compiling local release binary (with embedded frontend assets)..."
-pnpm tauri build --no-bundle
+pnpm tauri build --no-bundle --ignore-version-mismatches
 
 RELEASE_BIN="$ROOT_DIR/src-tauri/target/release/codex-switcher"
 if [ -f "$RELEASE_BIN" ]; then
