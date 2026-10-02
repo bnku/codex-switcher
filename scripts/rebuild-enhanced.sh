@@ -76,13 +76,11 @@ for branch in "${FEATURE_BRANCHES[@]}"; do
                 const fs = require("fs");
                 let content = fs.readFileSync("src-tauri/src/lib.rs", "utf8");
                 content = content.replace(/<<<<<<< HEAD[\s\S]*?>>>>>>>[^\n]*/g, (match) => {
-                    if (match.includes("OpenOptionsExt") || match.includes("target_os = \"macos\"")) {
+                    if (match.includes("tauri_plugin_single_instance")) {
+                        return `    #[allow(unused_mut)]\n    let mut builder = tauri::Builder::default()\n        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {\n            // On macOS, a second process can be started by a login item or\n            // launchd. That must not interrupt the foreground app. An explicit\n            // Dock/Finder reopen is handled by RunEvent::Reopen below.\n            #[cfg(not(target_os = \"macos\"))]\n            commands::restore_main_window(app);\n            #[cfg(target_os = \"macos\")]\n            let _ = app;\n        }))`;
+                    } else {
                         return "use std::io::Write;\n#[cfg(unix)]\nuse std::os::unix::fs::OpenOptionsExt;";
                     }
-                    if (match.includes("tauri_plugin_single_instance") || match.includes("allow(unused_mut)")) {
-                        return `    #[allow(unused_mut)]\n    let mut builder = tauri::Builder::default()\n        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {\n            // On macOS, a second process can be started by a login item or\n            // launchd. That must not interrupt the foreground app. An explicit\n            // Dock/Finder reopen is handled by RunEvent::Reopen below.\n            #[cfg(not(target_os = \"macos\"))]\n            commands::restore_main_window(app);\n            #[cfg(target_os = \"macos\")]\n            let _ = app;\n        }))`;
-                    }
-                    return match;
                 });
                 fs.writeFileSync("src-tauri/src/lib.rs", content);
             '
