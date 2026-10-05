@@ -39,6 +39,7 @@ git checkout -B enhanced upstream/main
 
 # 4. List of active feature / bugfix branches to merge into enhanced
 FEATURE_BRANCHES=(
+    "fix/cloudflare-403-rate-limit"
     "feature/remember-window-position"
     "feature/auto-session-recovery"
     "fork/enhanced-infra"

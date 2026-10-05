@@ -5,6 +5,8 @@
 - `feature/*` и `fix/*` — **атомарные PR-ветки**. Каждая фича или багфикс разрабатывается в строгой изоляции, отпочковываясь от свежего `upstream/main`. Они отправляются в апстрим через отдельные PR и не содержат изменений из других PR.
   - Текущие активные PR:
     - PR #192: `feature/auto-session-recovery` (Auto session recovery & smart quota prioritization)
+    - PR #200: `feature/remember-window-position` (Remember and restore main window position and size)
+    - PR #203: `fix/cloudflare-403-rate-limit` (Mitigate Cloudflare 403 blocks with paced requests, retries, and browser headers)
   - Смердженные в апстрим PR:
     - PR #198: `fix/linux-gtk-menu-resize` (Linux GTK menu removal & frameless window resize borders — влит в `upstream/main`)
 - `fork/enhanced-infra` — ветка инфраструктуры форка (скрипт сборки `scripts/rebuild-enhanced.sh`, GitHub Actions релизов `.github/workflows/enhanced-release.yml`, правила агента `AGENTS.md`).
