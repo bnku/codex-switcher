@@ -25,6 +25,12 @@ pub fn without_appmenu_module(value: &OsStr) -> Option<OsString> {
     (filtered.len() != modules.len()).then(|| OsString::from_vec(filtered.join(&b':')))
 }
 
+pub const WEBKIT_DISABLE_DMABUF_RENDERER: &str = "WEBKIT_DISABLE_DMABUF_RENDERER";
+
+pub fn should_disable_dmabuf_renderer(current_value: Option<&OsStr>) -> bool {
+    current_value.is_none()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -111,7 +117,9 @@ mod tests {
             without_appmenu_module(OsStr::from_bytes(
                 b"/opt/\xff/other.so:appmenu-gtk-module:atk-bridge"
             )),
-            Some(OsString::from_vec(b"/opt/\xff/other.so:atk-bridge".to_vec()))
+            Some(OsString::from_vec(
+                b"/opt/\xff/other.so:atk-bridge".to_vec()
+            ))
         );
         assert_eq!(
             without_appmenu_module(OsStr::from_bytes(b"/opt/\xff/other.so")),
@@ -123,5 +131,16 @@ mod tests {
     fn filtering_is_idempotent() {
         let filtered = without_appmenu_module(OsStr::new("gail:appmenu-gtk-module")).unwrap();
         assert_eq!(without_appmenu_module(&filtered), None);
+    }
+
+    #[test]
+    fn disables_dmabuf_renderer_when_unset() {
+        assert!(should_disable_dmabuf_renderer(None));
+    }
+
+    #[test]
+    fn preserves_explicit_dmabuf_renderer_setting() {
+        assert!(!should_disable_dmabuf_renderer(Some(OsStr::new("0"))));
+        assert!(!should_disable_dmabuf_renderer(Some(OsStr::new("1"))));
     }
 }
