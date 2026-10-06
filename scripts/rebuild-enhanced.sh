@@ -42,6 +42,7 @@ FEATURE_BRANCHES=(
     "fix/cloudflare-403-rate-limit"
     "feature/remember-window-position"
     "feature/auto-session-recovery"
+    "fix/linux-webkit-dmabuf"
     "fork/enhanced-infra"
 )
 
